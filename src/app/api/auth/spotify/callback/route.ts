@@ -11,10 +11,14 @@ export async function GET(request: NextRequest) {
   const verifier = request.cookies.get("spotify_code_verifier")?.value;
 
   if (error) {
+    console.error(`[spotify] authorization error returned: ${error}`);
     return NextResponse.redirect(new URL(`/?error=${error}`, origin));
   }
 
   if (!code || !verifier || !clientId) {
+    console.error(
+      `[spotify] callback missing params (code=${!!code} verifier=${!!verifier} clientId=${!!clientId})`
+    );
     return NextResponse.redirect(new URL("/?error=missing_params", origin));
   }
 
@@ -35,10 +39,16 @@ export async function GET(request: NextRequest) {
   const data = await result.json();
 
   if (!result.ok || !data.access_token) {
+    const body = JSON.stringify(data);
+    console.error(
+      `[spotify] token exchange failed with status ${result.status}: ${body}`
+    );
     return NextResponse.redirect(
       new URL("/?error=token_exchange_failed", origin)
     );
   }
+
+  console.log("[spotify] token exchange successful, saving session");
 
   const response = NextResponse.redirect(new URL("/", origin));
 

@@ -1,5 +1,5 @@
 import { cookies } from "next/headers";
-import { SPOTIFY_PROFILE_URL } from "@/lib/spotify";
+import { SPOTIFY_PROFILE_URL, refreshAccessToken } from "@/lib/spotify";
 import type {
   SpotifyArtist,
   SpotifyTrack,
@@ -22,20 +22,43 @@ export default async function Home(props: PageProps<"/">) {
   const { error } = await props.searchParams;
   const cookieStore = await cookies();
   const accessToken = cookieStore.get("spotify_access_token")?.value;
+  const refreshToken = cookieStore.get("spotify_refresh_token")?.value;
 
-  if (!accessToken) {
+  let token = accessToken ?? null;
+
+  if (!token && refreshToken) {
+    console.log("[spotify] access token missing, attempting refresh");
+    token = (await refreshAccessToken(refreshToken))?.access_token ?? null;
+    if (!token) console.error("[spotify] refresh did not yield a token");
+  }
+
+  if (!token) {
+    console.log(
+      `[spotify] no valid token (access=${!!accessToken} refresh=${!!refreshToken})`
+    );
     return <Login error={typeof error === "string" ? error : undefined} />;
   }
 
-  const [profile, topArtists, topTracks] = await Promise.all([
-    fetchProfile(accessToken),
-    fetchTopItems<SpotifyArtist>(accessToken, "artists"),
-    fetchTopItems<SpotifyTrack>(accessToken, "tracks"),
-  ]);
+  let profile = await fetchProfile(token);
+
+  if (!profile && refreshToken) {
+    console.log("[spotify] profile fetch failed, retrying after refresh");
+    const refreshed = await refreshAccessToken(refreshToken);
+    if (refreshed) {
+      token = refreshed.access_token;
+      profile = await fetchProfile(token);
+    }
+  }
 
   if (!profile) {
+    console.error("[spotify] profile fetch failed after refresh attempt");
     return <Login error="session_expired" />;
   }
+
+  const [topArtists, topTracks] = await Promise.all([
+    fetchTopItems<SpotifyArtist>(token, "artists"),
+    fetchTopItems<SpotifyTrack>(token, "tracks"),
+  ]);
 
   return (
     <Profile profile={profile} artists={topArtists} tracks={topTracks} />
@@ -48,7 +71,13 @@ async function fetchProfile(token: string): Promise<SpotifyUser | null> {
     cache: "no-store",
   });
 
-  if (!res.ok) return null;
+  if (!res.ok) {
+    const body = await res.text().catch(() => "");
+    console.error(
+      `[spotify] profile fetch failed with status ${res.status}: ${body}`
+    );
+    return null;
+  }
 
   return (await res.json()) as SpotifyUser;
 }
@@ -67,7 +96,13 @@ async function fetchTopItems<T>(
         }
       );
 
-      if (!res.ok) return [];
+      if (!res.ok) {
+        const body = await res.text().catch(() => "");
+        console.error(
+          `[spotify] top ${type} (${range}) fetch failed with status ${res.status}: ${body}`
+        );
+        return [];
+      }
 
       const data = await res.json();
       return data.items as T[];
